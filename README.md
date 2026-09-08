@@ -106,58 +106,61 @@ HIBP_API_KEY=
 | :--- | :--- | :--- |
 | `/help` or `/start` | None | Shows help manual and your authenticated user ID. |
 | `/check` or `/scan` | `<domain>` | Validates domain against allowlist and triggers background scan. |
+| `/checkall` | None | Batch queues automated health checks across all approved domains. |
 | `/status` | None | Displays currently active background scans and elapsed time. |
-| `/history` | `<domain>` | Displays past 5 scans for the domain and findings trend. |
-| `/history_detail` | `<scan_id>` | Displays full findings breakdown and uploads raw JSON report. |
+| `/history` | `<domain>` | Displays past 5 scans for the domain, health grades, and trends. |
+| `/history_detail` | `<scan_id>` | Displays full findings breakdown and raw report. |
+| `/export` | `<scan_id>` | Generates and sends a downloadable Executive Markdown Audit Report. |
+| `/schedule` | `<domain> <daily\|weekly>` | Enrolls an authorized domain in recurring automated health checks. |
+| `/unschedule` | `<domain>` | Cancels recurring automated monitoring for a domain. |
+| `/schedules` | None | Lists all active recurring monitoring schedules. |
 | `/addsite` | `<domain> <note>` | Adds or re-activates domain on the approved allowlist. |
 | `/removesite` | `<domain>` | Revokes approval for a domain (subsequent scans will be denied). |
-| `/listsites` | None | Lists all active approved domains and authorization notes. |
+| `/listsites` | None | Lists all approved domains and their latest security health score/grade. |
 | `/audit` | None | Shows the last 10 security audit records (allowed/denied attempts). |
 
 ---
 
 ## 🛠️ Security Tool Integrations
 
+### Built-in Scanners (Zero External Binaries Required)
 1. **TLS / SSL Health**:
    - Performs deep certificate audits (expiry date, SAN verification, trust chain).
    - Flags deprecated protocol negotiation (TLS 1.0, TLS 1.1).
    - Audits presence of HTTP Strict Transport Security (`Strict-Transport-Security`).
-2. **ProjectDiscovery Nuclei**:
+2. **HTTP Security Headers & Web Posture**:
+   - Audits essential defense headers: CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy.
+   - Detects cookie security deficiencies (`Secure`, `HttpOnly`, `SameSite`).
+   - Flags technology version disclosures (`Server`, `X-Powered-By`).
+   - Passive probe for critical sensitive file exposures (`.env`, `/.git/HEAD`).
+3. **DNS & Email Security Posture**:
+   - Inspects SPF TXT records (flags permissive `+all` wildcards or missing records).
+   - Audits DMARC policies (`p=reject`, `p=quarantine`, `p=none`).
+   - Verifies active MX mail exchanges and DNSSEC posture.
+4. **Security Health Scoring Engine**:
+   - Standardized 0–100 score and letter grade (`A+` to `F`) with visual progress gauge.
+
+### Optional External Scanners (Gracefully Degradable)
+5. **ProjectDiscovery Nuclei**:
    - Executes non-intrusive template tags: `cve,misconfig,exposure,tech`.
-   - Normalizes findings directly into unified severity tiers.
-3. **OWASP ZAP (REST API)**:
-   - Queries ZAP daemon (`/JSON/core/view/alerts/`).
-   - Maps risk scores to standard severities with CWE/WASC references.
-4. **Nikto**:
-   - Flags outdated web server software and misconfigurations.
-5. **Gitleaks**:
-   - Audits connected repository commit history for accidentally committed credentials.
-   - Any secret detected is automatically escalated to **CRITICAL** for immediate alert.
-6. **Have I Been Pwned**:
-   - Audits project-associated email addresses against public breach datasets without touching target infrastructure.
+6. **OWASP ZAP (REST API)**:
+   - Queries ZAP daemon (`/JSON/core/view/alerts/`) and maps findings to unified severities.
+7. **Nikto**:
+   - Flags outdated web server software and server misconfigurations.
+8. **Gitleaks**:
+   - Audits repository history for committed credentials and automatically flags critical leaks.
+9. **Have I Been Pwned**:
+   - Audits project-associated accounts against public breach datasets without touching target infrastructure.
 
 ---
 
 ## 🧪 Running Tests
 
-Execute the complete test suite using `pytest`:
+Execute the complete test suite (24 unit and integration tests) using `pytest`:
 ```powershell
 .\.venv\Scripts\pytest -v
 ```
 Output:
 ```
-tests/test_allowlist.py::test_normalize_domain PASSED
-tests/test_allowlist.py::test_unapproved_domain_is_strictly_rejected PASSED
-tests/test_allowlist.py::test_approved_domain_is_authorized PASSED
-tests/test_allowlist.py::test_revoked_domain_refuses_subsequent_scans PASSED
-tests/test_auth.py::test_settings_user_authorization PASSED
-tests/test_auth.py::test_restricted_access_decorator_blocks_unauthorized PASSED
-tests/test_auth.py::test_restricted_access_decorator_allows_authorized PASSED
-tests/test_orchestrator.py::test_orchestrator_full_lifecycle PASSED
-tests/test_scanners.py::test_report_formatter_prioritization PASSED
-tests/test_scanners.py::test_nuclei_parser PASSED
-tests/test_scanners.py::test_zap_parser PASSED
-tests/test_scanners.py::test_gitleaks_finding_is_critical PASSED
-tests/test_tls_scanner.py::test_tls_scanner_on_live_domain PASSED
-tests/test_tls_scanner.py::test_tls_scanner_connection_failure PASSED
+============================= 24 passed in 13.87s =============================
 ```

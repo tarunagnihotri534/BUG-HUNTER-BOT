@@ -12,12 +12,15 @@ from ..database.db import Database
 from ..database.models import Finding, ScanRecord, ScanStatus, Severity
 from ..scanners.base import BaseScanner
 from ..scanners.tls_scanner import TLSScanner
+from ..scanners.headers_scanner import HeadersScanner
+from ..scanners.dns_scanner import DNSScanner
 from ..scanners.nuclei_scanner import NucleiScanner
 from ..scanners.zap_scanner import ZAPScanner
 from ..scanners.nikto_scanner import NiktoScanner
 from ..scanners.gitleaks_scanner import GitleaksScanner
 from ..scanners.hibp_scanner import HIBPScanner
 from .formatter import ReportFormatter
+from .scorer import SecurityScorer
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,8 @@ class ScanOrchestrator:
         # Initialize scanners
         self.scanners: List[BaseScanner] = [
             TLSScanner(custom_bin_path=settings.sslyze_bin),
+            HeadersScanner(),
+            DNSScanner(),
             NucleiScanner(custom_bin_path=settings.nuclei_bin),
             ZAPScanner(base_url=settings.zap_base_url, api_key=settings.zap_api_key),
             NiktoScanner(custom_bin_path=settings.nikto_bin),
@@ -159,7 +164,12 @@ class ScanOrchestrator:
                     json.dump(raw_reports, f, indent=2)
 
                 # Update database
+                score, grade, badge, progress_bar = SecurityScorer.calculate_score(all_findings)
                 summary_data = {
+                    "score": score,
+                    "grade": grade,
+                    "badge": badge,
+                    "progress_bar": progress_bar,
                     "critical": len(critical_findings),
                     "high": len([f for f in all_findings if f.severity == Severity.HIGH]),
                     "medium": len([f for f in all_findings if f.severity == Severity.MEDIUM]),

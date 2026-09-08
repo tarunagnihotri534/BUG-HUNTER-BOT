@@ -3,6 +3,7 @@ import datetime
 import logging
 import socket
 import ssl
+import warnings
 from typing import List, Any
 import httpx
 from cryptography import x509
@@ -141,34 +142,37 @@ class TLSScanner(BaseScanner):
         """Test if server negotiates deprecated TLS 1.0 or TLS 1.1."""
         findings: List[Finding] = []
 
-        deprecated_versions = []
-        if hasattr(ssl.TLSVersion, "TLSv1"):
-            deprecated_versions.append(("TLS 1.0", ssl.TLSVersion.TLSv1))
-        if hasattr(ssl.TLSVersion, "TLSv1_1"):
-            deprecated_versions.append(("TLS 1.1", ssl.TLSVersion.TLSv1_1))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
 
-        for name, ver in deprecated_versions:
-            try:
-                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-                ctx.minimum_version = ver
-                ctx.maximum_version = ver
+            deprecated_versions = []
+            if hasattr(ssl.TLSVersion, "TLSv1"):
+                deprecated_versions.append(("TLS 1.0", ssl.TLSVersion.TLSv1))
+            if hasattr(ssl.TLSVersion, "TLSv1_1"):
+                deprecated_versions.append(("TLS 1.1", ssl.TLSVersion.TLSv1_1))
 
-                with socket.create_connection((domain, port), timeout=4) as sock:
-                    with ctx.wrap_socket(sock, server_hostname=domain) as _:
-                        findings.append(Finding(
-                            title=f"Deprecated Protocol Supported: {name}",
-                            severity=Severity.MEDIUM,
-                            tool=self.name,
-                            description=f"The server negotiated connection using obsolete {name}.",
-                            why_it_matters="Legacy TLS protocols (TLS 1.0 and TLS 1.1) are deprecated by RFC 8996 and susceptible to cryptographic attacks like BEAST and POODLE.",
-                            reference_url="https://datatracker.ietf.org/doc/html/rfc8996",
-                            raw_data={"deprecated_protocol": name}
-                        ))
-            except (ssl.SSLError, socket.timeout, ConnectionRefusedError, OSError):
-                # Connection refused or handshake failed for legacy version = secure behavior
-                pass
+            for name, ver in deprecated_versions:
+                try:
+                    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                    ctx.check_hostname = False
+                    ctx.verify_mode = ssl.CERT_NONE
+                    ctx.minimum_version = ver
+                    ctx.maximum_version = ver
+
+                    with socket.create_connection((domain, port), timeout=4) as sock:
+                        with ctx.wrap_socket(sock, server_hostname=domain) as _:
+                            findings.append(Finding(
+                                title=f"Deprecated Protocol Supported: {name}",
+                                severity=Severity.MEDIUM,
+                                tool=self.name,
+                                description=f"The server negotiated connection using obsolete {name}.",
+                                why_it_matters="Legacy TLS protocols (TLS 1.0 and TLS 1.1) are deprecated by RFC 8996 and susceptible to cryptographic attacks like BEAST and POODLE.",
+                                reference_url="https://datatracker.ietf.org/doc/html/rfc8996",
+                                raw_data={"deprecated_protocol": name}
+                            ))
+                except (ssl.SSLError, socket.timeout, ConnectionRefusedError, OSError):
+                    # Connection refused or handshake failed for legacy version = secure behavior
+                    pass
 
         return findings
 

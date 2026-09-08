@@ -50,6 +50,22 @@ async def async_init_and_run() -> None:
     logger.info("Security Health-Check Telegram Bot started. Listening for commands...")
     await app.initialize()
     await app.start()
+
+    # Restore active scheduled scans from database
+    active_schedules = await db.get_active_scheduled_scans()
+    if app.job_queue:
+        for sched in active_schedules:
+            job_name = f"sched_{sched.domain}_{sched.chat_id}"
+            interval_sec = sched.interval_hours * 3600
+            app.job_queue.run_repeating(
+                handlers._scheduled_job_callback,
+                interval=interval_sec,
+                first=interval_sec,
+                data={"domain": sched.domain, "user_id": sched.user_id, "chat_id": sched.chat_id},
+                name=job_name
+            )
+        logger.info(f"Loaded {len(active_schedules)} automated monitoring schedule(s).")
+
     await app.updater.start_polling()
 
     # Keep running until interrupted

@@ -1,17 +1,19 @@
 import datetime
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 from telegram import Update
-from telegram.ext import ContextTypes
+from telegram.ext import ContextTypes, CommandHandler
 
 from ..config import Settings
 from ..database.db import Database
-from ..database.models import ScanRecord
+from ..database.models import ScanRecord, ScheduledScan
 from ..security.allowlist import AllowlistService, normalize_domain
 from ..security.auth_filter import restricted_access
 from ..core.orchestrator import ScanOrchestrator
 from ..core.formatter import ReportFormatter
+from ..core.exporter import ExecutiveReportExporter
+from ..core.scorer import SecurityScorer
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +35,18 @@ class BotHandlers:
 
     def register_handlers(self, application) -> None:
         """Register command handlers with the Telegram application."""
-        from telegram.ext import CommandHandler
-
         guard = restricted_access(self.settings, self.db)
 
         application.add_handler(CommandHandler(["start", "help"], guard(self.cmd_help)))
         application.add_handler(CommandHandler(["check", "scan"], guard(self.cmd_check)))
+        application.add_handler(CommandHandler("checkall", guard(self.cmd_checkall)))
         application.add_handler(CommandHandler("status", guard(self.cmd_status)))
         application.add_handler(CommandHandler("history", guard(self.cmd_history)))
         application.add_handler(CommandHandler("history_detail", guard(self.cmd_history_detail)))
+        application.add_handler(CommandHandler("export", guard(self.cmd_export)))
+        application.add_handler(CommandHandler("schedule", guard(self.cmd_schedule)))
+        application.add_handler(CommandHandler("unschedule", guard(self.cmd_unschedule)))
+        application.add_handler(CommandHandler("schedules", guard(self.cmd_schedules)))
         application.add_handler(CommandHandler("addsite", guard(self.cmd_addsite)))
         application.add_handler(CommandHandler("removesite", guard(self.cmd_removesite)))
         application.add_handler(CommandHandler("listsites", guard(self.cmd_listsites)))
@@ -52,22 +57,78 @@ class BotHandlers:
         user_id = update.effective_user.id
         msg = (
             "🛡️ **Website Security Health-Check Assistant**\n\n"
-            "This bot executes defensive security health checks using established open-source tools "
-            "(OWASP ZAP, Nuclei, SSL/TLS audit, Nikto, Gitleaks, HaveIBeenPwned).\n\n"
+            "Automated defensive security health checks using TLS audit, HTTP security headers, "
+            "DNS/SPF/DMARC posture, and optional external engines (Nuclei, ZAP, Nikto, Gitleaks, HIBP).\n\n"
             "⚠️ **Hard Authorization Rule**: Scans are strictly restricted to pre-approved domains.\n\n"
-            "📋 **Core Commands**:\n"
-            "• `/check <domain>` — Run automated health check on an approved target\n"
+            "📋 **Core Scan Commands**:\n"
+            "• `/check <domain>` — Run comprehensive health check on an approved target\n"
+            "• `/checkall` — Queue health checks across all authorized domains\n"
             "• `/status` — View currently running background scans\n"
-            "• `/history <domain>` — View past scan trends and findings\n"
-            "• `/history_detail <scan_id>` — View details or raw log for a scan\n\n"
-            "🔐 **Allowlist Management**:\n"
+            "• `/history <domain>` — View past scan trends and grades\n"
+            "• `/history_detail <scan_id>` — View technical breakdown for a scan\n"
+            "• `/export <scan_id>` — Generate & download executive Markdown audit report\n\n"
+            "⏰ **Automated Continuous Monitoring**:\n"
+            "• `/schedule <domain> <daily|weekly>` — Set automated periodic scan\n"
+            "• `/unschedule <domain>` — Remove recurring scan schedule\n"
+            "• `/schedules` — List active monitoring schedules\n\n"
+            "🔐 **Allowlist & Audit Management**:\n"
             "• `/addsite <domain> <note>` — Authorize domain with signed justification\n"
             "• `/removesite <domain>` — Revoke authorization for a domain\n"
-            "• `/listsites` — Display all approved domains\n"
-            "• `/audit` — Review recent authorization & access logs\n\n"
+            "• `/listsites` — Display all approved domains & their latest scores\n"
+            "• `/audit` — Review authorization & security access logs\n\n"
             f"👤 *Authenticated as Telegram User ID: `{user_id}`*"
         )
         await update.effective_message.reply_text(msg, parse_mode="Markdown")
+
+    async def _launch_scan_for_chat(
+        self,
+        domain: str,
+        user_id: int,
+        chat_id: int,
+        bot,
+        initial_note: Optional[str] = None
+    ) -> str:
+        """Helper to launch a scan and wire delivery callbacks to a specific chat."""
+        async def alert_callback(alert_text: str):
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=alert_text,
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"Failed to deliver critical alert message: {e}")
+
+        async def completion_callback(scan_record: ScanRecord, summary_messages: List[str], raw_file: Optional[Path]):
+            try:
+                for part in summary_messages:
+                    await bot.send_message(
+                        chat_id=chat_id,
+                        text=part,
+                        parse_mode="Markdown"
+                    )
+
+                if raw_file and raw_file.exists():
+                    try:
+                        with open(raw_file, "rb") as f:
+                            await bot.send_document(
+                                chat_id=chat_id,
+                                document=f,
+                                filename=raw_file.name,
+                                caption=f"📄 Full raw output for scan `{scan_record.scan_id}`"
+                            )
+                    except Exception as doc_err:
+                        logger.warning(f"Could not upload raw report document: {doc_err}")
+            except Exception as e:
+                logger.error(f"Failed to deliver completion message: {e}")
+
+        scan_id = await self.orchestrator.start_scan_job(
+            domain=domain,
+            user_id=user_id,
+            alert_callback=alert_callback,
+            completion_callback=completion_callback
+        )
+        return scan_id
 
     async def cmd_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Trigger a security health check against an authorized domain."""
@@ -82,8 +143,6 @@ class BotHandlers:
             return
 
         raw_target = context.args[0]
-        
-        # 1. Enforce strict authorization check before touching any scanner
         is_allowed, domain_or_err, site = await self.allowlist.check_and_authorize(raw_target, user_id)
         if not is_allowed:
             await update.effective_message.reply_text(domain_or_err, parse_mode="Markdown")
@@ -91,60 +150,178 @@ class BotHandlers:
 
         domain = domain_or_err
 
-        # Immediate responsive confirmation
-        init_msg = await update.effective_message.reply_text(
+        await update.effective_message.reply_text(
             f"🔍 **Health Check Initiated for `{domain}`**\n\n"
             f"• **Basis**: _{site.note}_\n"
-            f"• **Status**: Scanners launched in background\n"
-            f"• **ETA**: ~1 to 3 minutes\n\n"
+            f"• **Engines**: TLS/SSL, HTTP Security Headers, DNS/SPF/DMARC Posture + available CLI plugins\n"
+            f"• **ETA**: ~30 to 90 seconds\n\n"
             f"⚡ *Immediate alerts will be dispatched if Critical issues are discovered.*",
             parse_mode="Markdown"
         )
 
-        # Callbacks for asynchronous updates
-        async def alert_callback(alert_text: str):
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=alert_text,
-                    parse_mode="Markdown"
-                )
-            except Exception as e:
-                logger.error(f"Failed to deliver critical alert message: {e}")
+        scan_id = await self._launch_scan_for_chat(domain, user_id, chat_id, context.bot)
+        logger.info(f"Scan {scan_id} initiated for {domain} by user {user_id}")
 
-        async def completion_callback(scan_record: ScanRecord, summary_messages: List[str], raw_file: Optional[Path]):
-            try:
-                for part in summary_messages:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=part,
-                        parse_mode="Markdown"
-                    )
-                
-                # If raw log exists and has findings, send document
-                if raw_file and raw_file.exists():
-                    try:
-                        with open(raw_file, "rb") as f:
-                            await context.bot.send_document(
-                                chat_id=chat_id,
-                                document=f,
-                                filename=raw_file.name,
-                                caption=f"📄 Full raw output for scan `{scan_record.scan_id}`"
-                            )
-                    except Exception as doc_err:
-                        logger.warning(f"Could not upload raw report document: {doc_err}")
-            except Exception as e:
-                logger.error(f"Failed to deliver completion message: {e}")
+    async def cmd_checkall(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Queue security health checks across all approved domains."""
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
 
-        # Launch background scan
-        scan_id = await self.orchestrator.start_scan_job(
-            domain=domain,
-            user_id=user_id,
-            alert_callback=alert_callback,
-            completion_callback=completion_callback
+        sites = await self.db.get_all_active_approved_sites()
+        if not sites:
+            await update.effective_message.reply_text(
+                "ℹ️ No approved domains registered.\nAdd domains with `/addsite <domain> <note>` first."
+            )
+            return
+
+        await update.effective_message.reply_text(
+            f"🚀 **Batch Audit Initiated**: Queuing health checks for **{len(sites)}** authorized domain(s):\n" +
+            "\n".join([f"• `{s.domain}`" for s in sites]) +
+            "\n\n*Reports will arrive asynchronously as each audit finishes.*",
+            parse_mode="Markdown"
         )
 
-        logger.info(f"Scan {scan_id} initiated for {domain} by user {user_id}")
+        for site in sites:
+            await self._launch_scan_for_chat(site.domain, user_id, chat_id, context.bot)
+
+    async def cmd_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Generate and send a standalone executive Markdown audit report."""
+        if not context.args:
+            await update.effective_message.reply_text(
+                "ℹ️ **Usage**: `/export <scan_id>`\nExample: `/export scan_20260908_120000_abc123`",
+                parse_mode="Markdown"
+            )
+            return
+
+        scan_id = context.args[0].strip()
+        scan_record = await self.db.get_scan(scan_id)
+        if not scan_record:
+            await update.effective_message.reply_text(f"❌ Scan ID `{scan_id}` was not found.")
+            return
+
+        status_msg = await update.effective_message.reply_text(
+            f"📄 *Compiling Executive Audit Report for `{scan_record.target_domain}`...*",
+            parse_mode="Markdown"
+        )
+
+        report_path = ExecutiveReportExporter.generate_markdown_report(
+            scan_record,
+            self.settings.reports_dir
+        )
+
+        try:
+            with open(report_path, "rb") as f:
+                await update.effective_message.reply_document(
+                    document=f,
+                    filename=report_path.name,
+                    caption=f"🛡️ **Executive Security Audit Report**\n• Target: `{scan_record.target_domain}`\n• Audit ID: `{scan_id}`",
+                    parse_mode="Markdown"
+                )
+            await status_msg.delete()
+        except Exception as e:
+            logger.error(f"Error sending export document: {e}")
+            await update.effective_message.reply_text(f"⚠️ Report generated at `{report_path}` but could not be transmitted: {e}")
+
+    async def cmd_schedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Enroll a domain in automated periodic health monitoring."""
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id
+
+        if len(context.args) < 2:
+            await update.effective_message.reply_text(
+                "ℹ️ **Usage**: `/schedule <domain> <daily|weekly>`\nExample: `/schedule example.com daily`",
+                parse_mode="Markdown"
+            )
+            return
+
+        raw_target = context.args[0]
+        freq = context.args[1].lower().strip()
+
+        if freq in ("daily", "24h", "24"):
+            interval_hours = 24
+        elif freq in ("weekly", "168h", "168"):
+            interval_hours = 168
+        elif freq.isdigit():
+            interval_hours = max(1, int(freq))
+        else:
+            await update.effective_message.reply_text("❌ Frequency must be `daily`, `weekly`, or number of hours.")
+            return
+
+        is_allowed, domain_or_err, site = await self.allowlist.check_and_authorize(raw_target, user_id)
+        if not is_allowed:
+            await update.effective_message.reply_text(domain_or_err, parse_mode="Markdown")
+            return
+
+        domain = domain_or_err
+        await self.db.add_scheduled_scan(domain, user_id, chat_id, interval_hours)
+
+        # Register or update in Telegram JobQueue if active
+        job_name = f"sched_{domain}_{chat_id}"
+        if context.application and context.application.job_queue:
+            # Remove any existing job
+            for j in context.application.job_queue.get_jobs_by_name(job_name):
+                j.schedule_removal()
+
+            # Schedule recurring check
+            interval_sec = interval_hours * 3600
+            context.application.job_queue.run_repeating(
+                self._scheduled_job_callback,
+                interval=interval_sec,
+                first=interval_sec,
+                data={"domain": domain, "user_id": user_id, "chat_id": chat_id},
+                name=job_name
+            )
+
+        interval_label = "daily (every 24h)" if interval_hours == 24 else f"every {interval_hours} hour(s)"
+        await update.effective_message.reply_text(
+            f"⏰ **Automated Monitoring Scheduled**\n\n"
+            f"• **Target**: `{domain}`\n"
+            f"• **Frequency**: {interval_label}\n"
+            f"• **Notifications**: Dispatched directly to this chat\n\n"
+            f"Use `/schedules` to inspect active monitoring jobs.",
+            parse_mode="Markdown"
+        )
+
+    async def _scheduled_job_callback(self, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Callback fired by PTB JobQueue to execute recurring scan."""
+        data = context.job.data
+        domain = data["domain"]
+        user_id = data["user_id"]
+        chat_id = data["chat_id"]
+
+        logger.info(f"Executing scheduled scan for {domain} in chat {chat_id}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ *Running scheduled security check for `{domain}`...*",
+            parse_mode="Markdown"
+        )
+        await self._launch_scan_for_chat(domain, user_id, chat_id, context.bot)
+
+    async def cmd_unschedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Remove recurring scan schedule for a domain."""
+        chat_id = update.effective_chat.id
+        if not context.args:
+            await update.effective_message.reply_text("ℹ️ **Usage**: `/unschedule <domain>`")
+            return
+
+        domain = normalize_domain(context.args[0])
+        removed = await self.db.remove_scheduled_scan(domain, chat_id)
+
+        job_name = f"sched_{domain}_{chat_id}"
+        if context.application and context.application.job_queue:
+            for j in context.application.job_queue.get_jobs_by_name(job_name):
+                j.schedule_removal()
+
+        if removed:
+            await update.effective_message.reply_text(f"✅ Recurring schedule removed for `{domain}`.")
+        else:
+            await update.effective_message.reply_text(f"ℹ️ No active schedule found for `{domain}` in this chat.")
+
+    async def cmd_schedules(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """List all active automated schedules."""
+        schedules = await self.db.get_active_scheduled_scans()
+        msg = ReportFormatter.format_scheduled_scans_list(schedules)
+        await update.effective_message.reply_text(msg, parse_mode="Markdown")
 
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """List active background scans."""
@@ -159,88 +336,71 @@ class BotHandlers:
             elapsed = int((now - j.started_at).total_seconds())
             tools_str = ", ".join(j.active_tools) if j.active_tools else "initializing"
             lines.append(
-                f"• **Target**: `{j.domain}`\n"
-                f"  Scan ID: `{j.scan_id}`\n"
-                f"  Elapsed: `{elapsed}s`\n"
-                f"  Active Toolset: `{tools_str}`\n"
+                f"• `{j.domain}` (`{j.scan_id}`)\n"
+                f"  Elapsed: `{elapsed}s` | Tools running: {tools_str}\n"
             )
-
         await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Display past scans for a given target domain."""
+        """View recent scan history for a target domain."""
         if not context.args:
             await update.effective_message.reply_text("ℹ️ **Usage**: `/history <domain>`")
             return
 
         domain = normalize_domain(context.args[0])
         history = await self.db.get_domain_history(domain, limit=5)
+
         if not history:
-            await update.effective_message.reply_text(f"ℹ️ No past scan records found for `{domain}`.")
+            await update.effective_message.reply_text(f"ℹ️ No past scans found for domain `{domain}`.")
             return
 
-        lines = [f"📜 **Scan History for `{domain}`** (Recent 5):\n"]
-        for s in history:
-            sum_data = s.summary or {}
-            crit = sum_data.get("critical", 0)
-            high = sum_data.get("high", 0)
-            med = sum_data.get("medium", 0)
-            low = sum_data.get("low_info", 0)
-            status_emoji = "✅" if s.status.value == "COMPLETED" else "❌"
+        lines = [f"📜 **Scan History for `{domain}`**:\n"]
+        for record in history:
+            summary = record.summary
+            crit = summary.get("critical", 0)
+            high = summary.get("high", 0)
+            med = summary.get("medium", 0)
+            low = summary.get("low_info", 0)
+            grade = summary.get("grade", "N/A")
+            score = summary.get("score", "N/A")
 
             lines.append(
-                f"{status_emoji} `{s.scan_id}` ({s.started_at[:10]})\n"
-                f"  Status: {s.status.value} | Findings: 🚨{crit} ⚠️{high} 🔶{med} ℹ️{low}\n"
-                f"  Inspect: `/history_detail {s.scan_id}`\n"
+                f"• `{record.started_at[:16]}` | Grade: **{grade}** ({score}/100)\n"
+                f"  ID: `{record.scan_id}`\n"
+                f"  🚨 {crit} | ⚠️ {high} | 🔶 {med} | ℹ️ {low}\n"
+                f"  _Details_: `/history_detail {record.scan_id}`\n"
             )
-
         await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def cmd_history_detail(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Retrieve full details or raw log for a specific scan."""
+        """Retrieve full findings for a specific scan."""
         if not context.args:
             await update.effective_message.reply_text("ℹ️ **Usage**: `/history_detail <scan_id>`")
             return
 
         scan_id = context.args[0].strip()
         record = await self.db.get_scan(scan_id)
+
         if not record:
             await update.effective_message.reply_text(f"❌ Scan ID `{scan_id}` not found.")
             return
 
-        summary_msgs = ReportFormatter.format_scan_summary(record)
-        for msg in summary_msgs:
+        messages = ReportFormatter.format_scan_summary(record)
+        for msg in messages:
             await update.effective_message.reply_text(msg, parse_mode="Markdown")
 
-        if record.raw_output_path and Path(record.raw_output_path).exists():
-            try:
-                with open(record.raw_output_path, "rb") as f:
-                    await update.effective_message.reply_document(
-                        document=f,
-                        filename=Path(record.raw_output_path).name,
-                        caption=f"📄 Raw scanner dump for `{scan_id}`"
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to attach raw dump: {e}")
-
     async def cmd_addsite(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Authorize a domain with a descriptive note on authorization basis."""
+        """Add or update an approved site in the allowlist."""
         if len(context.args) < 2:
             await update.effective_message.reply_text(
-                "ℹ️ **Usage**: `/addsite <domain> <authorization note>`\n"
-                "Example: `/addsite myblog.org Personal blog project`\n"
-                "Example: `/addsite clientcorp.com Client engagement signed 2026-09-01`",
-                parse_mode="Markdown"
+                "ℹ️ **Usage**: `/addsite <domain> <authorization note/reason>`\n"
+                "Example: `/addsite mysite.com Client production security audit`"
             )
             return
 
         domain = normalize_domain(context.args[0])
-        note = " ".join(context.args[1:]).strip()
+        note = " ".join(context.args[1:])
         user_id = update.effective_user.id
-
-        if not domain or "." not in domain:
-            await update.effective_message.reply_text("❌ Invalid domain format.")
-            return
 
         await self.db.add_approved_site(domain=domain, note=note, added_by=user_id)
         await self.db.add_audit_log(
@@ -287,7 +447,7 @@ class BotHandlers:
             )
 
     async def cmd_listsites(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Display all currently approved sites."""
+        """Display all currently approved sites with their latest security score."""
         sites = await self.db.list_approved_sites(active_only=True)
         if not sites:
             await update.effective_message.reply_text(
@@ -296,14 +456,17 @@ class BotHandlers:
             )
             return
 
-        lines = ["📋 **Pre-Approved Targets Allowlist**:\n"]
+        site_scores: Dict[str, Tuple[int, str]] = {}
         for s in sites:
-            lines.append(
-                f"• `{s.domain}`\n"
-                f"  Note: _{s.note}_\n"
-                f"  Added: `{s.created_at[:10]}` by user `{s.added_by}`\n"
-            )
-        await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+            latest = await self.db.get_latest_scan_for_domain(s.domain)
+            if latest and latest.summary:
+                score = latest.summary.get("score")
+                grade = latest.summary.get("grade")
+                if score is not None and grade:
+                    site_scores[s.domain.lower()] = (score, grade)
+
+        msg = ReportFormatter.format_sites_status_list(sites, site_scores)
+        await update.effective_message.reply_text(msg, parse_mode="Markdown")
 
     async def cmd_audit(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show recent authorization and scan audit records."""

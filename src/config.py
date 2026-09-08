@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     # Local persistence paths
     db_path: Path = Field(default=Path("data/security_bot.db"), alias="DB_PATH")
     raw_output_dir: Path = Field(default=Path("data/scans"), alias="RAW_OUTPUT_DIR")
+    reports_dir: Path = Field(default=Path("data/reports"), alias="REPORTS_DIR")
 
     # Scanner configurations
     zap_base_url: str = Field(default="http://localhost:8080", alias="ZAP_BASE_URL")

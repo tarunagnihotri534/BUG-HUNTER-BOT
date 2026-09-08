@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 import aiosqlite
 
-from .models import ApprovedSite, AuditLog, Finding, ScanRecord, Severity, ScanStatus
+from .models import ApprovedSite, AuditLog, Finding, ScanRecord, Severity, ScanStatus, ScheduledScan
 
 
 class Database:
@@ -80,12 +80,27 @@ class Database:
                 );
             """)
 
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS scheduled_scans (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    domain TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    interval_hours INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    last_run_at TEXT,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(domain, chat_id)
+                );
+            """)
+
             # Indices for performance
             await db.execute("CREATE INDEX IF NOT EXISTS idx_approved_domain ON approved_sites(domain);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_domain ON audit_logs(target_domain);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scans_domain ON scans(target_domain);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_scans_scan_id ON scans(scan_id);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_scheduled_domain ON scheduled_scans(domain);")
 
             await db.commit()
 
@@ -329,3 +344,93 @@ class Database:
                     findings=[]
                 ))
             return results
+
+    async def get_all_active_approved_sites(self) -> List[ApprovedSite]:
+        """Retrieve all active approved sites."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT id, domain, note, added_by, created_at, is_active
+                FROM approved_sites
+                WHERE is_active = 1
+                ORDER BY domain ASC;
+            """)
+            rows = await cursor.fetchall()
+            return [
+                ApprovedSite(
+                    id=r["id"],
+                    domain=r["domain"],
+                    note=r["note"],
+                    added_by=r["added_by"],
+                    created_at=r["created_at"],
+                    is_active=bool(r["is_active"])
+                )
+                for r in rows
+            ]
+
+    async def get_latest_scan_for_domain(self, domain: str) -> Optional[ScanRecord]:
+        """Retrieve the latest completed scan for a target domain."""
+        history = await self.get_domain_history(domain, limit=1)
+        return history[0] if history else None
+
+    # --- Scheduled Scans CRUD ---
+    async def add_scheduled_scan(self, domain: str, user_id: int, chat_id: int, interval_hours: int) -> bool:
+        """Add or update an automated recurring scan schedule."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO scheduled_scans (domain, user_id, chat_id, interval_hours, created_at, is_active)
+                VALUES (?, ?, ?, ?, ?, 1)
+                ON CONFLICT(domain, chat_id) DO UPDATE SET
+                    interval_hours = excluded.interval_hours,
+                    is_active = 1;
+            """, (domain.lower().strip(), user_id, chat_id, interval_hours, now))
+            await db.commit()
+            return True
+
+    async def remove_scheduled_scan(self, domain: str, chat_id: int) -> bool:
+        """Deactivate a scheduled scan for a given domain and chat."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                UPDATE scheduled_scans
+                SET is_active = 0
+                WHERE domain = ? AND chat_id = ? AND is_active = 1;
+            """, (domain.lower().strip(), chat_id))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def get_active_scheduled_scans(self) -> List[ScheduledScan]:
+        """Retrieve all currently active scheduled scans."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT id, domain, user_id, chat_id, interval_hours, created_at, last_run_at, is_active
+                FROM scheduled_scans
+                WHERE is_active = 1
+                ORDER BY domain ASC;
+            """)
+            rows = await cursor.fetchall()
+            return [
+                ScheduledScan(
+                    id=r["id"],
+                    domain=r["domain"],
+                    user_id=r["user_id"],
+                    chat_id=r["chat_id"],
+                    interval_hours=r["interval_hours"],
+                    created_at=r["created_at"],
+                    last_run_at=r["last_run_at"],
+                    is_active=bool(r["is_active"])
+                )
+                for r in rows
+            ]
+
+    async def update_schedule_last_run(self, schedule_id: int) -> None:
+        """Record timestamp of when scheduled scan was executed."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE scheduled_scans
+                SET last_run_at = ?
+                WHERE id = ?;
+            """, (now, schedule_id))
+            await db.commit()

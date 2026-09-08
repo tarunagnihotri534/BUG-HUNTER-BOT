@@ -95,3 +95,15 @@ class StagingCredential:
     encrypted_secret: str
     notes: str
     created_at: str
+
+
+@dataclass
+class ScheduledScan:
+    id: Optional[int]
+    domain: str
+    user_id: int
+    chat_id: int
+    interval_hours: int
+    created_at: str
+    last_run_at: Optional[str] = None
+    is_active: bool = True
