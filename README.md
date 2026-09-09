@@ -1,45 +1,42 @@
 # 🛡️ CyberSentinel — Website Security Health-Check Bot
 
-<p align="center">
-  <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg?style=for-the-badge&logo=python&logoColor=white" alt="Python Versions">
-  <img src="https://img.shields.io/badge/telegram_bot_api-v21.0+-0088cc.svg?style=for-the-badge&logo=telegram&logoColor=white" alt="Telegram Bot API">
-  <img src="https://img.shields.io/badge/tests-24%20passed-success.svg?style=for-the-badge&logo=pytest&logoColor=white" alt="Tests">
-  <img src="https://img.shields.io/badge/architecture-asyncio%20%2F%20zero--trust-informational.svg?style=for-the-badge" alt="Architecture">
-  <img src="https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge" alt="License">
-</p>
+![Python Versions](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg?style=for-the-badge&logo=python&logoColor=white)
+![Telegram Bot API](https://img.shields.io/badge/telegram_bot_api-v21.0+-0088cc.svg?style=for-the-badge&logo=telegram&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-24%20passed-success.svg?style=for-the-badge&logo=pytest&logoColor=white)
+![Architecture](https://img.shields.io/badge/architecture-asyncio%20%2F%20zero--trust-informational.svg?style=for-the-badge)
+![License](https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge)
 
-<p align="center">
-  <strong>An asynchronous Telegram security assistant coordinating automated, defensive health checks on pre-authorized domains with strict Zero-Trust guardrails, automated posture grading, recurring cron monitoring, and executive audit export.</strong>
-</p>
+> **An asynchronous Telegram security assistant coordinating automated, defensive health checks on pre-authorized domains with strict Zero-Trust guardrails, automated posture grading, recurring cron monitoring, and executive audit export.**
 
 ---
 
-## 📑 Table of Contents
+## Table of Contents
 
-- [Overview](#-overview)
-- [Architecture & Workflow](#-architecture--workflow)
-- [Key Features](#-key-features)
-- [Interactive UI Preview](#-interactive-ui-preview)
-- [Bot Command Reference](#-bot-command-reference)
-- [Scanner Fleet Matrix](#-scanner-fleet-matrix)
-- [Security Guardrails & Hard Rules](#-security-guardrails--hard-rules)
-- [Project Structure](#-project-structure)
-- [Getting Started](#-getting-started)
+- [Overview](#overview)
+- [Architecture & Workflow](#architecture--workflow)
+- [Key Features](#key-features)
+- [Interactive UI Preview](#interactive-ui-preview)
+- [Bot Command Reference](#bot-command-reference)
+- [Scanner Fleet Matrix](#scanner-fleet-matrix)
+- [Security Guardrails & Hard Rules](#security-guardrails--hard-rules)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
   - [Configuration (.env)](#configuration-env)
   - [Running the Bot](#running-the-bot)
-- [Automated Testing](#-automated-testing)
-- [Security Notice & Ethical Use](#-security-notice--ethical-use)
-- [License](#-license)
+- [Automated Testing](#automated-testing)
+- [Security Notice & Ethical Use](#security-notice--ethical-use)
+- [License](#license)
 
 ---
 
-## 🌐 Overview
+## Overview
 
 **CyberSentinel** is a defensive security operations bot designed for security engineers, system administrators, and site reliability teams. Operating directly inside Telegram, it conducts regular, non-destructive health checks across your domain inventory without requiring complex enterprise dashboard setups.
 
 ### Why CyberSentinel?
+
 - **Zero-Trust Guardrails**: Strict domain allowlist (`approved_sites`) with hard normalization prevents arbitrary or unauthorized scans.
 - **RBAC by Design**: Strict Telegram User ID filtering blocks unauthorized users before any command handler executes.
 - **Built-in & Degraded Engine**: Runs deep TLS, HTTP security headers, and DNS/email security audits out-of-the-box with **zero external binary dependencies**, while seamlessly orchestrating optional scanners (Nuclei, OWASP ZAP, Nikto, Gitleaks, HaveIBeenPwned) if installed.
@@ -48,7 +45,7 @@
 
 ---
 
-## 🏗️ Architecture & Workflow
+## Architecture & Workflow
 
 ```mermaid
 flowchart TD
@@ -90,7 +87,7 @@ flowchart TD
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 | Capability | Description |
 | :--- | :--- |
@@ -104,9 +101,10 @@ flowchart TD
 
 ---
 
-## 📱 Interactive UI Preview
+## Interactive UI Preview
 
 ### 1. Scan Summary with Health Gauge
+
 ```text
 🛡️ Security Health-Check Report
 ━━━━━━━━━━━━━━━━━━━━
@@ -135,6 +133,7 @@ flowchart TD
 ```
 
 ### 2. Immediate Critical Incident Alert
+
 ```text
 🚨🚨 URGENT SECURITY ALERT: STAGING.EXAMPLE.COM 🚨🚨
 Immediate attention is required! 1 critical issue(s) detected during automated health check:
@@ -150,7 +149,7 @@ Immediate attention is required! 1 critical issue(s) detected during automated h
 
 ---
 
-## 💬 Bot Command Reference
+## Bot Command Reference
 
 | Command | Arguments | Access Level | Description |
 | :--- | :--- | :---: | :--- |
@@ -171,7 +170,7 @@ Immediate attention is required! 1 critical issue(s) detected during automated h
 
 ---
 
-## 🛠️ Scanner Fleet Matrix
+## Scanner Fleet Matrix
 
 CyberSentinel leverages a modular scanner plugin architecture. Scanners operate independently in parallel, returning standardized finding objects:
 
@@ -188,27 +187,31 @@ CyberSentinel leverages a modular scanner plugin architecture. Scanners operate 
 
 ---
 
-## 🔒 Security Guardrails & Hard Rules
+## Security Guardrails & Hard Rules
 
 ### 1. Strict Domain Allowlist (`approved_sites`)
+
 - All scan targets **must** be pre-registered via `/addsite <domain>`.
 - The bot applies RFC-compliant domain normalization:
+
   ```text
   https://Sub.Domain.com:8443/path?param=123#frag  ──▶  sub.domain.com
   ```
+
 - **Zero Override**: If a target domain is not present in the allowlist, the scan is rejected immediately and an event is logged in the `audit_logs` table.
 - Non-destructive by design: Scans only perform inspection of public-facing endpoints and configurations. Exploitation scripts, fuzzing, and brute-forcing are completely prohibited.
 
 ### 2. Role-Based Access Control (RBAC)
+
 - Commands are gated by the `@restricted_access` decorator.
 - Only Telegram User IDs listed in `ALLOWED_TELEGRAM_USER_IDS` can execute commands or query scan data.
 - Unauthorized interaction attempts are blocked silently or with an access-denied message and recorded in the audit trail.
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
-```
+```text
 d:\TELEGRAM AGENT\
 ├── run_bot.py                  # Application entry point launcher
 ├── requirements.txt            # Python dependencies
@@ -256,9 +259,10 @@ d:\TELEGRAM AGENT\
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
+
 - **Python 3.10+** (Tested on Python 3.10, 3.11, 3.12, 3.13)
 - A **Telegram Bot Token** generated from [@BotFather](https://t.me/BotFather)
 - Your numeric **Telegram User ID** retrieved from [@userinfobot](https://t.me/userinfobot)
@@ -266,24 +270,30 @@ d:\TELEGRAM AGENT\
 ### Installation
 
 1. **Clone the repository**:
+
    ```bash
    git clone https://github.com/tarunagnihotri534/CYBER.git
    cd CYBER
    ```
 
 2. **Create and activate a virtual environment**:
+
    - **Windows (PowerShell)**:
+
      ```powershell
      python -m venv .venv
      .\.venv\Scripts\Activate.ps1
      ```
+
    - **Linux / macOS**:
+
      ```bash
      python3 -m venv .venv
      source .venv/bin/activate
      ```
 
 3. **Install dependencies**:
+
    ```bash
    pip install --upgrade pip
    pip install -r requirements.txt
@@ -294,7 +304,7 @@ d:\TELEGRAM AGENT\
 Duplicate `.env.example` to create your working `.env`:
 
 ```bash
-cp .env.example .env     # On Linux / macOS
+cp .env.example .env         # On Linux / macOS
 Copy-Item .env.example .env  # On Windows PowerShell
 ```
 
@@ -317,23 +327,27 @@ Configure your environment variables:
 ### Running the Bot
 
 Launch the assistant:
+
 ```powershell
 .\.venv\Scripts\python run_bot.py
 ```
+
 *(Or `python run_bot.py` with the virtual environment activated).*
 
 ---
 
-## 🧪 Automated Testing
+## Automated Testing
 
 The project includes an extensive test suite covering authorization, allowlist normalization, all scanner modules, scoring calculations, export generation, and database interactions.
 
 Run the test suite with `pytest`:
+
 ```bash
 pytest -v
 ```
 
 Expected output:
+
 ```text
 ============================= test session starts =============================
 platform win32 -- Python 3.13.0, pytest-9.1.1, pluggy-1.6.0
@@ -358,15 +372,15 @@ tests\test_tls_scanner.py ..                                             [100%]
 
 ---
 
-## ⚖️ Security Notice & Ethical Use
+## Security Notice & Ethical Use
 
 > [!IMPORTANT]
 > **Strictly Authorized Auditing Only**: CyberSentinel is built exclusively for defensive security posture verification, compliance monitoring, and vulnerability management on **domains and systems you own or have explicit, documented authorization to test**.
-> 
+>
 > Scanning third-party infrastructure without explicit authorization may violate applicable laws and regulations (including the Computer Fraud and Abuse Act, GDPR, and regional cybersecurity legislation). The authors assume no liability for misuse of this tool.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
