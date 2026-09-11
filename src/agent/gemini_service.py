@@ -1,5 +1,6 @@
 import logging
 from typing import Dict, List, Optional, Any
+import httpx
 from ..config import Settings
 from ..database.db import Database
 from ..security.allowlist import AllowlistService, normalize_domain
@@ -76,8 +77,23 @@ class GeminiService:
         self.db = db
         self.client = None
         self._chats: Dict[int, Any] = {}
+        self._nvidia_history: Dict[int, List[Dict[str, str]]] = {}
+        self.active_provider: Optional[str] = None
 
-        if settings.gemini_api_key:
+        # Determine active AI Provider
+        use_nvidia = False
+        if settings.nvidia_api_key and (settings.ai_provider == "nvidia" or settings.ai_provider == "auto"):
+            use_nvidia = True
+        elif settings.ai_provider == "nvidia":
+            use_nvidia = True
+
+        if use_nvidia and settings.nvidia_api_key:
+            self.active_provider = "nvidia"
+            logger.info(
+                f"AI Assistant initialized with NVIDIA Nemotron model '{settings.nvidia_model}'"
+            )
+        elif settings.gemini_api_key:
+            self.active_provider = "gemini"
             try:
                 from google import genai
                 self.client = genai.Client(api_key=settings.gemini_api_key)
@@ -89,18 +105,24 @@ class GeminiService:
                 self.client = None
         else:
             logger.warning(
-                "GEMINI_API_KEY is not configured. Conversational AI chat will be in advisory fallback mode."
+                "Neither NVIDIA_API_KEY nor GEMINI_API_KEY is configured. AI chat will be in advisory fallback mode."
             )
 
     @property
     def is_configured(self) -> bool:
-        """Return whether Gemini API client is available."""
-        return self.client is not None
+        """Return whether an AI assistant provider is available."""
+        if self.active_provider == "nvidia":
+            return bool(self.settings.nvidia_api_key)
+        if self.active_provider == "gemini":
+            return self.client is not None
+        return bool(self.client is not None or self.settings.nvidia_api_key)
 
     def reset_chat(self, user_id: int) -> None:
         """Clear conversation history for a given user."""
         if user_id in self._chats:
             del self._chats[user_id]
+        if user_id in self._nvidia_history:
+            del self._nvidia_history[user_id]
 
     def _build_tools(self, user_id: int):
         """Build callable tools/functions that Gemini can invoke."""
@@ -157,18 +179,76 @@ class GeminiService:
         self._chats[user_id] = chat
         return chat
 
+    async def _chat_nvidia(self, user_id: int, user_message: str) -> str:
+        """Send message to NVIDIA Nemotron OpenAI-compatible endpoint."""
+        if user_id not in self._nvidia_history:
+            system_prompt = SYSTEM_INSTRUCTION
+            try:
+                sites = await self.db.list_approved_sites(active_only=True)
+                if sites:
+                    domains_str = ", ".join([s.domain for s in sites])
+                    system_prompt += f"\n\nCurrently approved domains in allowlist: {domains_str}."
+            except Exception:
+                pass
+
+            self._nvidia_history[user_id] = [
+                {"role": "system", "content": system_prompt}
+            ]
+
+        self._nvidia_history[user_id].append({"role": "user", "content": user_message})
+
+        headers = {
+            "Authorization": f"Bearer {self.settings.nvidia_api_key}",
+            "Content-Type": "application/json",
+        }
+
+        messages_to_send = [self._nvidia_history[user_id][0]] + self._nvidia_history[user_id][-8:]
+
+        payload = {
+            "model": self.settings.nvidia_model,
+            "messages": messages_to_send,
+            "max_tokens": 1024,
+            "temperature": 0.6,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                resp = await client.post(
+                    "https://integrate.api.nvidia.com/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                reply = data["choices"][0]["message"]["content"].strip()
+                self._nvidia_history[user_id].append({"role": "assistant", "content": reply})
+                return reply
+        except Exception as e:
+            logger.error(f"Error during NVIDIA Nemotron chat for user {user_id}: {e}", exc_info=True)
+            self.reset_chat(user_id)
+            return (
+                f"⚠️ **NVIDIA Nemotron Assistant encountered an error**:\n"
+                f"`{str(e)}`\n\n"
+                "_Chat session has been reset. Please try again._"
+            )
+
     async def chat(self, user_id: int, user_message: str) -> str:
-        """Send message to Gemini assistant and return the model's text response."""
+        """Send message to configured AI assistant (NVIDIA Nemotron or Gemini) and return response."""
         if not self.is_configured:
             return (
                 "🤖 **Gemini AI Assistant is not configured yet.**\n\n"
-                "To enable conversational intelligence, add your Gemini API Key in your `.env` file:\n"
+                "To enable conversational intelligence, add your GEMINI_API_KEY or NVIDIA_API_KEY in your `.env` file:\n"
                 "```env\n"
+                "NVIDIA_API_KEY=your_nvidia_api_key\n"
+                "NVIDIA_MODEL=nvidia/nemotron-3-ultra-550b-a55b\n"
+                "# or\n"
                 "GEMINI_API_KEY=your_gemini_api_key\n"
-                "GEMINI_MODEL=gemini-3.5-flash\n"
                 "```\n"
                 "You can still use all regular slash commands like `/help`, `/check <domain>`, `/status`, and `/listsites`!"
             )
+
+        if self.active_provider == "nvidia":
+            return await self._chat_nvidia(user_id, user_message)
 
         try:
             chat = await self._get_or_create_chat(user_id)

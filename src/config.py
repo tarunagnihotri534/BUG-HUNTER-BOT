@@ -34,9 +34,12 @@ class Settings(BaseSettings):
     hibp_api_key: str = Field(default="", alias="HIBP_API_KEY")
     max_concurrent_scans: int = Field(default=2, alias="MAX_CONCURRENT_SCANS")
 
-    # Gemini AI Assistant configuration
+    # Conversational AI Assistant configuration (Gemini / NVIDIA Nemotron)
+    ai_provider: str = Field(default="auto", alias="AI_PROVIDER")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
     gemini_model: str = Field(default="gemini-3.5-flash", alias="GEMINI_MODEL")
+    nvidia_api_key: str = Field(default="", alias="NVIDIA_API_KEY")
+    nvidia_model: str = Field(default="nvidia/nemotron-3-ultra-550b-a55b", alias="NVIDIA_MODEL")
 
     @field_validator("allowed_telegram_user_ids", mode="before")
     @classmethod

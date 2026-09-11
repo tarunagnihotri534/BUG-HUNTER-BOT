@@ -27,7 +27,7 @@ def test_split_telegram_message():
 
 @pytest.mark.asyncio
 async def test_gemini_service_unconfigured():
-    settings = Settings(gemini_api_key="")
+    settings = Settings(gemini_api_key="", nvidia_api_key="")
     mock_allowlist = MagicMock()
     mock_orchestrator = MagicMock()
     mock_db = MagicMock()
@@ -93,7 +93,7 @@ async def test_gemini_service_tools():
 
 @pytest.mark.asyncio
 async def test_gemini_service_chat_flow():
-    settings = Settings(gemini_api_key="mock_key")
+    settings = Settings(gemini_api_key="mock_key", ai_provider="gemini", nvidia_api_key="")
     mock_allowlist = MagicMock()
     mock_orchestrator = MagicMock()
     mock_db = MagicMock()
@@ -110,10 +110,36 @@ async def test_gemini_service_chat_flow():
 
         service = GeminiService(settings, mock_allowlist, mock_orchestrator, mock_db)
         assert service.is_configured
+        assert service.active_provider == "gemini"
 
         reply = await service.chat(user_id=999, user_message="How do I fix CSP?")
         assert "Content-Security-Policy" in reply
         mock_chat.send_message.assert_awaited_once_with("How do I fix CSP?")
+
+
+@pytest.mark.asyncio
+async def test_nvidia_nemotron_service_chat_flow():
+    settings = Settings(nvidia_api_key="mock_nvapi_key", ai_provider="nvidia", gemini_api_key="")
+    mock_allowlist = MagicMock()
+    mock_orchestrator = MagicMock()
+    mock_db = MagicMock()
+    mock_db.list_approved_sites = AsyncMock(return_value=[])
+
+    service = GeminiService(settings, mock_allowlist, mock_orchestrator, mock_db)
+    assert service.is_configured
+    assert service.active_provider == "nvidia"
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": "Nemotron 550B Security Advice: Enable HSTS."}}]
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = mock_resp
+        reply = await service.chat(user_id=888, user_message="How do I secure HTTPS?")
+        assert "Nemotron 550B Security Advice" in reply
+        assert 888 in service._nvidia_history
 
 
 @pytest.mark.asyncio
