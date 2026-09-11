@@ -163,6 +163,52 @@ class HeadersScanner(BaseScanner):
                         why_it_matters="Controls access to sensitive browser features (camera, microphone, geolocation) by third parties."
                     ))
 
+                # Deep CORS Misconfiguration Probe
+                try:
+                    cors_test_origin = "https://evil-attacker.com"
+                    cors_res = await client.get(
+                        https_url,
+                        headers={"Origin": cors_test_origin},
+                        timeout=5.0
+                    )
+                    acao = cors_res.headers.get("access-control-allow-origin", "").strip()
+                    acac = cors_res.headers.get("access-control-allow-credentials", "").lower().strip()
+
+                    if acao == cors_test_origin and acac == "true":
+                        findings.append(Finding(
+                            title="Critical CORS Misconfiguration: Arbitrary Origin Reflection with Credentials",
+                            severity=Severity.CRITICAL,
+                            tool=self.name,
+                            description=(
+                                f"The server dynamically reflects untrusted Origin headers (`{acao}`) "
+                                f"while simultaneously permitting credentials (`Access-Control-Allow-Credentials: true`)."
+                            ),
+                            why_it_matters=(
+                                "Allows malicious third-party websites to execute cross-origin authenticated requests, "
+                                "hijacking user sessions and reading confidential user data."
+                            ),
+                            reference_url="https://portswigger.net/web-security/cors",
+                            endpoint=https_url,
+                            steps_to_reproduce=(
+                                f"1. Send an HTTP GET request to `{https_url}` with header `Origin: {cors_test_origin}`.\n"
+                                f"2. Inspect the response headers.\n"
+                                f"3. Confirm `Access-Control-Allow-Origin: {cors_test_origin}` and `Access-Control-Allow-Credentials: true`."
+                            ),
+                            remediation="Avoid dynamically reflecting arbitrary Origin headers. Maintain a strict whitelist of trusted origins and do not enable credentials on wildcard/reflected origins."
+                        ))
+                    elif acao == "*" and acac == "true":
+                        findings.append(Finding(
+                            title="Invalid / Insecure CORS Header Combination (`*` with Credentials)",
+                            severity=Severity.HIGH,
+                            tool=self.name,
+                            description="Access-Control-Allow-Origin is wildcard `*` with Access-Control-Allow-Credentials: true.",
+                            why_it_matters="Browsers reject this combination, but it indicates dangerous cross-origin policy intent.",
+                            reference_url="https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS",
+                            endpoint=https_url
+                        ))
+                except Exception as cors_err:
+                    logger.debug(f"CORS probe skipped/failed on {domain}: {cors_err}")
+
                 # Server banner / Technology disclosure
                 server = resp_headers.get("server")
                 x_powered = resp_headers.get("x-powered-by")

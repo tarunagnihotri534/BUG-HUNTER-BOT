@@ -37,8 +37,8 @@ class ReportFormatter:
         Returns list of message chunks to respect Telegram's 4096-character limit.
         """
         findings = scan_record.findings
-        # Calculate objective posture score
-        score, grade, badge, progress_bar = SecurityScorer.calculate_score(findings)
+        # Calculate objective posture score and active leak flag
+        score, grade, badge, progress_bar, active_leak = SecurityScorer.calculate_score(findings)
 
         # Group findings
         critical_list = [f for f in findings if f.severity == Severity.CRITICAL]
@@ -46,13 +46,16 @@ class ReportFormatter:
         medium_list = [f for f in findings if f.severity == Severity.MEDIUM]
         low_info_list = [f for f in findings if f.severity in (Severity.LOW, Severity.INFO)]
 
+        active_leak_banner = "🚨 **Active Leak: YES (Grade Capped at F)**\n" if active_leak else "🛡️ **Active Leak: NO**\n"
+
         header = (
             f"🛡️ **Security Health-Check Report**\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"• **Target**: `{scan_record.target_domain}`\n"
             f"• **Audit ID**: `{scan_record.scan_id}`\n"
             f"• **Health Grade**: **{badge}**\n"
-            f"• **Posture Gauge**: `{progress_bar}`\n\n"
+            f"• **Posture Gauge**: `{progress_bar}`\n"
+            f"• {active_leak_banner}\n"
             f"📊 **Executive Breakdown**:\n"
             f"• 🚨 Critical (Immediate): **{len(critical_list)}**\n"
             f"• ⚠️ High (Fix Soon): **{len(high_list)}**\n"

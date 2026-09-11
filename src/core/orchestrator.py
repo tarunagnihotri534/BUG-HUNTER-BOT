@@ -19,6 +19,13 @@ from ..scanners.zap_scanner import ZAPScanner
 from ..scanners.nikto_scanner import NiktoScanner
 from ..scanners.gitleaks_scanner import GitleaksScanner
 from ..scanners.hibp_scanner import HIBPScanner
+from ..scanners.js_scanner import JSBundleScanner
+from ..scanners.subdomain_scanner import SubdomainScanner
+from ..scanners.archive_scanner import ArchiveScanner
+from ..scanners.param_fuzzer import ParamFuzzerScanner
+from ..scanners.ratelimit_scanner import RateLimitScanner
+from ..scanners.bucket_scanner import BucketExposureScanner
+from ..scanners.api_exposure_scanner import APIExposureScanner
 from .formatter import ReportFormatter
 from .scorer import SecurityScorer
 
@@ -47,11 +54,18 @@ class ScanOrchestrator:
         self.semaphore = asyncio.Semaphore(settings.max_concurrent_scans)
         self.running_jobs: Dict[str, RunningJob] = {}
 
-        # Initialize scanners
+        # Initialize full suite of defensive & bug-bounty scanners
         self.scanners: List[BaseScanner] = [
             TLSScanner(custom_bin_path=settings.sslyze_bin),
             HeadersScanner(),
             DNSScanner(),
+            JSBundleScanner(),
+            SubdomainScanner(),
+            ArchiveScanner(),
+            BucketExposureScanner(),
+            APIExposureScanner(),
+            ParamFuzzerScanner(),
+            RateLimitScanner(),
             NucleiScanner(custom_bin_path=settings.nuclei_bin),
             ZAPScanner(base_url=settings.zap_base_url, api_key=settings.zap_api_key),
             NiktoScanner(custom_bin_path=settings.nikto_bin),
@@ -156,6 +170,26 @@ class ScanOrchestrator:
                     except Exception as e:
                         logger.error(f"Error sending critical alert callback: {e}")
 
+                # Diff-Based Continuous Monitoring: Compute Delta against previous scan
+                try:
+                    prev_findings = await self.db.get_previous_scan_findings(domain)
+                    if prev_findings:
+                        prev_fps = {f.fingerprint for f in prev_findings}
+                        new_delta_findings = [f for f in all_findings if f.fingerprint not in prev_fps]
+                        if new_delta_findings and alert_callback:
+                            delta_msg = (
+                                f"🔔 **Continuous Monitoring Delta Alert: {domain.upper()}**\n"
+                                f"Detected **{len(new_delta_findings)} NEW** finding(s) since last scan:\n"
+                            )
+                            delta_lines = [delta_msg]
+                            for nf in new_delta_findings[:8]:
+                                delta_lines.append(f"• {nf.severity.badge}: **{nf.title}** (`{nf.tool}`)")
+                            if len(new_delta_findings) > 8:
+                                delta_lines.append(f"• ...and {len(new_delta_findings) - 8} more new issue(s).")
+                            await alert_callback("\n".join(delta_lines))
+                except Exception as diff_err:
+                    logger.debug(f"Diff computation error: {diff_err}")
+
                 # Persist raw report file
                 output_dir = Path(self.settings.raw_output_dir) / domain
                 output_dir.mkdir(parents=True, exist_ok=True)
@@ -164,12 +198,13 @@ class ScanOrchestrator:
                     json.dump(raw_reports, f, indent=2)
 
                 # Update database
-                score, grade, badge, progress_bar = SecurityScorer.calculate_score(all_findings)
+                score, grade, badge, progress_bar, active_leak = SecurityScorer.calculate_score(all_findings)
                 summary_data = {
                     "score": score,
                     "grade": grade,
                     "badge": badge,
                     "progress_bar": progress_bar,
+                    "active_leak": active_leak,
                     "critical": len(critical_findings),
                     "high": len([f for f in all_findings if f.severity == Severity.HIGH]),
                     "medium": len([f for f in all_findings if f.severity == Severity.MEDIUM]),

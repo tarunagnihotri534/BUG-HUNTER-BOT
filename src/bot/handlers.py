@@ -55,6 +55,7 @@ class BotHandlers:
         application.add_handler(CommandHandler("listsites", guard(self.cmd_listsites)))
         application.add_handler(CommandHandler("audit", guard(self.cmd_audit)))
         application.add_handler(CommandHandler("reset", guard(self.cmd_reset_chat)))
+        application.add_handler(CommandHandler("bounty", guard(self.cmd_bounty)))
 
         # Natural language conversational chat via Gemini AI Assistant
         application.add_handler(
@@ -76,14 +77,15 @@ class BotHandlers:
             "• `/reset` — Clear your conversation memory with Gemini\n\n"
             "⚠️ **Hard Authorization Rule**: Scans are strictly restricted to pre-approved domains.\n\n"
             "📋 **Core Scan Commands**:\n"
-            "• `/check <domain>` — Run comprehensive health check on an approved target\n"
+            "• `/check <domain> [--authorized]` — Run comprehensive health check on an approved target (add `--authorized` to enable active parameter fuzzing & anti-brute-force testing)\n"
             "• `/checkall` — Queue health checks across all authorized domains\n"
             "• `/status` — View currently running background scans\n"
             "• `/history <domain>` — View past scan trends and grades\n"
             "• `/history_detail <scan_id>` — View technical breakdown for a scan\n"
-            "• `/export <scan_id>` — Generate & download executive Markdown audit report\n\n"
+            "• `/export <scan_id>` — Generate & download executive Markdown audit report\n"
+            "• `/bounty <scan_id>` — Auto-draft vulnerability writeups in Bug Bounty submission format (HackerOne/Bugcrowd)\n\n"
             "⏰ **Automated Continuous Monitoring**:\n"
-            "• `/schedule <domain> <daily|weekly>` — Set automated periodic scan\n"
+            "• `/schedule <domain> <daily|weekly>` — Set automated periodic scan with diff-based delta alerts\n"
             "• `/unschedule <domain>` — Remove recurring scan schedule\n"
             "• `/schedules` — List active monitoring schedules\n\n"
             "🔐 **Allowlist & Audit Management**:\n"
@@ -101,7 +103,8 @@ class BotHandlers:
         user_id: int,
         chat_id: int,
         bot,
-        initial_note: Optional[str] = None
+        initial_note: Optional[str] = None,
+        authorized_consent: bool = False
     ) -> str:
         """Helper to launch a scan and wire delivery callbacks to a specific chat."""
         async def alert_callback(alert_text: str):
@@ -141,7 +144,8 @@ class BotHandlers:
             domain=domain,
             user_id=user_id,
             alert_callback=alert_callback,
-            completion_callback=completion_callback
+            completion_callback=completion_callback,
+            authorized_consent=authorized_consent
         )
         return scan_id
 
@@ -158,6 +162,8 @@ class BotHandlers:
             return
 
         raw_target = context.args[0]
+        has_authorized_flag = any(arg.lower() in ("--authorized", "-a", "--active") for arg in context.args[1:])
+
         is_allowed, domain_or_err, site = await self.allowlist.check_and_authorize(raw_target, user_id)
         if not is_allowed:
             await update.effective_message.reply_text(domain_or_err, parse_mode="Markdown")
@@ -165,17 +171,36 @@ class BotHandlers:
 
         domain = domain_or_err
 
+        # Log timestamped consent if active testing requested
+        if has_authorized_flag:
+            await self.db.log_consent(
+                target_domain=domain,
+                user_id=user_id,
+                action="ACTIVE_SECURITY_TESTING_CONSENT",
+                details=f"User {user_id} explicitly supplied --authorized flag for parameter fuzzing & rate-limit testing."
+            )
+            mode_desc = "⚡ **Mode**: Deep Bug-Bounty Audit (Active Parameter Fuzzing & Anti-Brute-Force Enabled with Signed Consent)\n"
+        else:
+            mode_desc = "🛡️ **Mode**: Passive Defensive Audit (To enable active fuzzing & rate-limit checks, pass `--authorized`)\n"
+
         await update.effective_message.reply_text(
             f"🔍 **Health Check Initiated for `{domain}`**\n\n"
             f"• **Basis**: _{site.note}_\n"
-            f"• **Engines**: TLS/SSL, HTTP Security Headers, DNS/SPF/DMARC Posture + available CLI plugins\n"
+            f"• {mode_desc}"
+            f"• **Engines**: TLS, HTTP Headers & CORS, DNS, JS Bundles & Maps, Subdomains, Archive URLs, Cloud Buckets, API Exposure\n"
             f"• **ETA**: ~30 to 90 seconds\n\n"
-            f"⚡ *Immediate alerts will be dispatched if Critical issues are discovered.*",
+            f"⚡ *Immediate alerts will be dispatched if Critical issues or continuous monitoring deltas are discovered.*",
             parse_mode="Markdown"
         )
 
-        scan_id = await self._launch_scan_for_chat(domain, user_id, chat_id, context.bot)
-        logger.info(f"Scan {scan_id} initiated for {domain} by user {user_id}")
+        scan_id = await self._launch_scan_for_chat(
+            domain=domain,
+            user_id=user_id,
+            chat_id=chat_id,
+            bot=context.bot,
+            authorized_consent=has_authorized_flag
+        )
+        logger.info(f"Scan {scan_id} initiated for {domain} by user {user_id} (active_consent={has_authorized_flag})")
 
     async def cmd_checkall(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Queue security health checks across all approved domains."""
@@ -236,6 +261,54 @@ class BotHandlers:
         except Exception as e:
             logger.error(f"Error sending export document: {e}")
             await update.effective_message.reply_text(f"⚠️ Report generated at `{report_path}` but could not be transmitted: {e}")
+
+    async def cmd_bounty(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Generate and export auto-drafted Bug Bounty submission writeups for a scan."""
+        if not context.args:
+            await update.effective_message.reply_text(
+                "ℹ️ **Usage**: `/bounty <scan_id>`\n"
+                "Generates submission-ready Markdown vulnerability reports (HackerOne / Bugcrowd format).",
+                parse_mode="Markdown"
+            )
+            return
+
+        scan_id = context.args[0].strip()
+        scan_record = await self.db.get_scan(scan_id)
+        if not scan_record:
+            await update.effective_message.reply_text(f"❌ Scan ID `{scan_id}` was not found.")
+            return
+
+        # Prioritize Critical and High findings for bug bounty draft export
+        actionable_findings = [f for f in scan_record.findings if f.severity in (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM)]
+        if not actionable_findings:
+            await update.effective_message.reply_text(
+                f"ℹ️ Scan `{scan_id}` has no Medium/High/Critical findings to export for bug bounty submissions."
+            )
+            return
+
+        status_msg = await update.effective_message.reply_text(
+            f"📝 *Drafting {len(actionable_findings)} Bug Bounty Submission Report(s)...*",
+            parse_mode="Markdown"
+        )
+
+        for f in actionable_findings[:3]:  # Top 3 most urgent
+            bounty_path = ExecutiveReportExporter.generate_bug_bounty_draft(
+                finding=f,
+                target_domain=scan_record.target_domain,
+                output_dir=self.settings.reports_dir
+            )
+            try:
+                with open(bounty_path, "rb") as bf:
+                    await update.effective_message.reply_document(
+                        document=bf,
+                        filename=bounty_path.name,
+                        caption=f"🎯 **Bug Bounty Submission Draft**\n• Finding: `{f.title}`\n• Severity: **{f.severity.value}**",
+                        parse_mode="Markdown"
+                    )
+            except Exception as doc_err:
+                logger.warning(f"Failed to transmit bounty draft: {doc_err}")
+
+        await status_msg.delete()
 
     async def cmd_schedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Enroll a domain in automated periodic health monitoring."""

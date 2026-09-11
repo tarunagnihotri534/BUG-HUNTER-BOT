@@ -69,7 +69,16 @@ class Finding:
     description: str
     why_it_matters: str
     reference_url: Optional[str] = None
+    endpoint: Optional[str] = None
+    steps_to_reproduce: Optional[str] = None
+    remediation: Optional[str] = None
     raw_data: Optional[Dict[str, Any]] = None
+
+    @property
+    def fingerprint(self) -> str:
+        """Deterministic unique identifier for finding deduplication across scans."""
+        ep = self.endpoint or ""
+        return f"{self.tool}:{self.title}:{ep}".lower().strip()
 
 
 @dataclass

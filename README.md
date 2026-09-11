@@ -2,11 +2,11 @@
 
 ![Python Versions](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg?style=for-the-badge&logo=python&logoColor=white)
 ![Telegram Bot API](https://img.shields.io/badge/telegram_bot_api-v21.0+-0088cc.svg?style=for-the-badge&logo=telegram&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-30%20passed-success.svg?style=for-the-badge&logo=pytest&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-40%20passed-success.svg?style=for-the-badge&logo=pytest&logoColor=white)
 ![Architecture](https://img.shields.io/badge/architecture-asyncio%20%2F%20zero--trust-informational.svg?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge)
 
-> **An asynchronous Telegram security assistant coordinating automated, defensive health checks on pre-authorized domains with strict Zero-Trust guardrails, automated posture grading, recurring cron monitoring, and executive audit export.**
+> **An asynchronous Telegram security assistant coordinating automated, defensive health checks and bug-bounty-hunter-grade security depth on pre-authorized domains with strict Zero-Trust guardrails, automated posture grading, recurring cron monitoring, and executive audit export.**
 
 ---
 
@@ -154,8 +154,9 @@ Immediate attention is required! 1 critical issue(s) detected during automated h
 | Command | Arguments | Access Level | Description |
 | :--- | :--- | :---: | :--- |
 | `/help`, `/start` | None | Authorized | Displays system manual, operational status, and current Telegram ID. |
-| `/check`, `/scan` | `<domain>` | Authorized | Validates domain against allowlist and queues a background security audit. |
-| `/checkall` | None | Authorized | Batch queues automated health checks across all approved domains. |
+| `/check`, `/scan` | `<domain> [--authorized]` | Authorized | Validates domain against allowlist and queues a security audit. Supplying `--authorized` unlocks active parameter fuzzing & rate-limit checks with logged consent. |
+| `/checkall` | `[--authorized]` | Authorized | Batch queues automated health checks across all approved domains. |
+| `/bounty` | `<scan_id>` | Authorized | Generates and sends ready-to-submit HackerOne/Bugcrowd markdown vulnerability reports for all critical/high findings. |
 | `/status` | None | Authorized | Displays currently executing background scan jobs and elapsed times. |
 | `/history` | `<domain>` | Authorized | Shows past 5 scans for the domain, historical score trends, and health grades. |
 | `/history_detail` | `<scan_id>` | Authorized | Displays full findings breakdown and raw diagnostics for a specific scan. |
@@ -166,7 +167,7 @@ Immediate attention is required! 1 critical issue(s) detected during automated h
 | `/addsite` | `<domain> [note]` | Authorized | Adds or reactivates a domain in the authorized target allowlist. |
 | `/removesite` | `<domain>` | Authorized | Revokes approval for a domain (all future scans will be denied). |
 | `/listsites` | None | Authorized | Lists all approved domains and their latest recorded security grade. |
-| `/audit` | None | Authorized | Displays the last 10 security audit records (authorized & denied attempts). |
+| `/audit` | None | Authorized | Displays the last 10 security audit records (authorized, denied, and consent events). |
 | `/reset` | None | Authorized | Clears active conversational memory with the Gemini AI assistant. |
 | **Natural Language** | `<message>` | Authorized | Direct chat with Gemini Pro assistant to analyze findings, ask cybersecurity questions, or trigger audits. |
 
@@ -179,8 +180,17 @@ CyberSentinel leverages a modular scanner plugin architecture. Scanners operate 
 | Scanner | Category | Core Checks & Vectors | Requirements | Fallback Mode |
 | :--- | :---: | :--- | :---: | :---: |
 | **TLS/SSL Engine** | Built-in | Certificate validity, expiration (<30d warning), trust chains, SAN coverage, deprecated protocols (TLS 1.0/1.1), HSTS enforcement. | Pure Python | **Always Active** |
-| **HTTP Security Headers** | Built-in | CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy, cookie security (`Secure`, `HttpOnly`, `SameSite`), sensitive dotfile exposure (`.env`, `/.git/HEAD`). | `httpx` | **Always Active** |
+| **HTTP Security Headers & CORS** | Built-in | CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, cookie security (`Secure`, `HttpOnly`), deep CORS origin reflection probe (`Origin: https://evil-attacker.com` + `Credentials: true`). | `httpx` | **Always Active** |
 | **DNS & Email Posture** | Built-in | SPF records & permissive wildcards (`+all`), DMARC policy enforcement (`p=reject`), MX exchange verification, DNSSEC signing. | `dnspython` | **Always Active** |
+| **JS Bundles & Source Maps** | Bug Bounty | Frontend bundle discovery, Shannon entropy scoring, secret detection regexes (AWS, Slack, Google, Stripe, JWT, Private Keys), public `.js.map` source exposure. | `httpx` | **Always Active** |
+| **Subdomain & Asset Discovery** | Bug Bounty | Passive CT log enumeration via `crt.sh`, DNS wildcard canary filtering, staging/dev environment tagging (`staging-`, `dev-`, `internal-`), `subfinder` integration. | `dnspython` / `httpx` | Built-in fallback |
+| **Historical Endpoints** | Bug Bounty | Wayback Machine CDX API, gau/waybackurls integration, live endpoint probing, soft-404 hash/title comparison. | `httpx` | Built-in fallback |
+| **Cloud Storage Bucket Exposure** | Bug Bounty | Permutation testing for AWS S3, Google Cloud Storage (GCS), Azure Blob containers; flags public listing/read access as CRITICAL. | `httpx` | **Always Active** |
+| **API Over-Exposure Check** | Bug Bounty | Recursive JSON response traversal for credential leaks (`password_hash`, `salt`, `secret_key`), internal tokens, and ID leakage on common API routes. | `httpx` | **Always Active** |
+| **Parameter Fuzzing & IDOR** | Bug Bounty (Active) | Hidden GET/POST parameter discovery (`COMMON_PARAMS` dictionary), IDOR pattern heuristics for manual testing. **Strictly gated behind `--authorized` consent.** | `httpx` / `arjun` | Built-in fallback |
+| **Rate-Limit & Anti-Brute-Force** | Bug Bounty (Active) | 20-request burst against authentication endpoints (`/login`, `/signin`, `/oauth/token`), checks for 429, Retry-After, CAPTCHA, or lockout. **Strictly gated behind `--authorized` consent.** | `httpx` | **Always Active** |
+| **Continuous Diff & Delta Alerts** | Architecture | Computes fingerprint hashes per finding, compares against prior scans, and broadcasts instant Delta Alerts for newly detected issues. | SQLite | **Always Active** |
+| **Bug Bounty Auto-Drafts** | Reporting | Formats technical findings into industry-standard HackerOne/Bugcrowd markdown submission drafts (`/bounty <scan_id>`). | Pure Python | **Always Active** |
 | **Nuclei** | External | CVE scanning, exposed panels, misconfigurations, technology detection. | `nuclei` binary | Gracefully skips if uninstalled |
 | **OWASP ZAP** | External | Active / passive proxy alerts via REST API. | ZAP Daemon | Gracefully skips if unreachable |
 | **Nikto** | External | Web server banner disclosure, dangerous files/programs, outdated software. | `nikto` binary | Gracefully skips if uninstalled |
@@ -201,9 +211,13 @@ CyberSentinel leverages a modular scanner plugin architecture. Scanners operate 
   ```
 
 - **Zero Override**: If a target domain is not present in the allowlist, the scan is rejected immediately and an event is logged in the `audit_logs` table.
-- Non-destructive by design: Scans only perform inspection of public-facing endpoints and configurations. Exploitation scripts, fuzzing, and brute-forcing are completely prohibited.
+- Non-destructive by default: Passive scanning conducts inspection of public endpoints, CT logs, archive indices, and public frontend assets.
+- **Active Testing Consent Gate**: Active parameter fuzzing and rate-limit probing strictly require the `--authorized` flag. When provided, an immutable consent entry is written to `audit_logs` before any active packets are dispatched.
 
-### 2. Role-Based Access Control (RBAC)
+### 2. Decoupled Scoring & Critical Leaks
+- Any CRITICAL finding (e.g., exposed `.env`, hardcoded AWS secrets in JS, public cloud storage buckets, or arbitrary CORS credential reflection) automatically overrides the overall letter grade to **F** and flags a prominent `Active Leak: YES` banner, irrespective of composite numeric points.
+
+### 3. Role-Based Access Control (RBAC)
 
 - Commands are gated by the `@restricted_access` decorator.
 - Only Telegram User IDs listed in `ALLOWED_TELEGRAM_USER_IDS` can execute commands or query scan data.
@@ -231,8 +245,15 @@ d:\TELEGRAM AGENT\
 │   ├── scanners/
 │   │   ├── base.py             # Abstract base scanner interface
 │   │   ├── tls_scanner.py      # TLS/SSL certificate & protocol validator
-│   │   ├── headers_scanner.py  # HTTP security headers, cookies & sensitive exposure
+│   │   ├── headers_scanner.py  # HTTP security headers, cookies & CORS probe
 │   │   ├── dns_scanner.py      # DNSSEC, SPF, DMARC, and MX verification
+│   │   ├── js_scanner.py       # Frontend JS secret entropy & .map auditor
+│   │   ├── subdomain_scanner.py# crt.sh CT logs, wildcard & staging finder
+│   │   ├── archive_scanner.py  # Wayback Machine / gau historical endpoint miner
+│   │   ├── param_fuzzer.py     # Parameter-level fuzzer & IDOR heuristics
+│   │   ├── ratelimit_scanner.py# Auth route burst & rate-limit auditor
+│   │   ├── bucket_scanner.py   # Cloud bucket exposure (S3, GCS, Azure Blob)
+│   │   ├── api_exposure_scanner.py # Deep API JSON response key auditor
 │   │   ├── nuclei_scanner.py   # ProjectDiscovery Nuclei runner & parser
 │   │   ├── zap_scanner.py      # OWASP ZAP REST client
 │   │   ├── nikto_scanner.py    # Nikto web server scanner integration

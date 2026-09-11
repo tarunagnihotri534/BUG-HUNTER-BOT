@@ -2,7 +2,7 @@ import datetime
 from pathlib import Path
 from typing import Optional
 
-from ..database.models import ScanRecord, Severity
+from ..database.models import Finding, ScanRecord, Severity
 from .scorer import SecurityScorer
 
 
@@ -19,12 +19,14 @@ class ExecutiveReportExporter:
         output_dir.mkdir(parents=True, exist_ok=True)
         report_file = output_dir / f"{scan_record.scan_id}_audit_report.md"
 
-        score, grade, badge, progress_bar = SecurityScorer.calculate_score(scan_record.findings)
+        score, grade, badge, progress_bar, active_leak = SecurityScorer.calculate_score(scan_record.findings)
 
         crit_list = [f for f in scan_record.findings if f.severity == Severity.CRITICAL]
         high_list = [f for f in scan_record.findings if f.severity == Severity.HIGH]
         med_list = [f for f in scan_record.findings if f.severity == Severity.MEDIUM]
         low_list = [f for f in scan_record.findings if f.severity in (Severity.LOW, Severity.INFO)]
+
+        leak_status_row = "| **Active Critical Leak** | **🚨 YES (Critical Action Required)** |" if active_leak else "| **Active Critical Leak** | **🛡️ NO** |"
 
         lines = [
             f"# 🛡️ Technical Security Audit Report",
@@ -42,6 +44,7 @@ class ExecutiveReportExporter:
             f"| :--- | :--- |",
             f"| **Security Health Score** | **{score} / 100** |",
             f"| **Security Grade** | **{badge}** |",
+            f"{leak_status_row}",
             f"| **Posture Gauge** | `{progress_bar}` |",
             f"| **Total Findings** | **{len(scan_record.findings)} issues evaluated** |",
             f"",
@@ -95,5 +98,57 @@ class ExecutiveReportExporter:
 
         with open(report_file, "w", encoding="utf-8") as out:
             out.write("\n".join(lines))
+
+        return report_file
+
+    @staticmethod
+    def generate_bug_bounty_draft(finding: Finding, target_domain: str, output_dir: Path) -> Path:
+        """
+        Generates a professional bug-bounty platform submission template
+        (HackerOne / Bugcrowd style) for a confirmed vulnerability finding.
+        """
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        safe_title = "".join(c for c in finding.title if c.isalnum() or c in ("-", "_")).lower()
+        report_file = output_dir / f"bounty_draft_{safe_title}.md"
+
+        endpoint_str = finding.endpoint or f"https://{target_domain}"
+        reproduction_str = finding.steps_to_reproduce or (
+            f"1. Open terminal or browser.\n"
+            f"2. Send an HTTP request to `{endpoint_str}`.\n"
+            f"3. Observe response and verify finding behavior: {finding.description}."
+        )
+        remediation_str = finding.remediation or finding.why_it_matters
+
+        draft = [
+            f"# [Vulnerability Report] {finding.title} on {target_domain}",
+            f"",
+            f"## 1. Summary",
+            f"{finding.description}",
+            f"",
+            f"## 2. Vulnerability Details",
+            f"- **Target Domain / Asset**: `{target_domain}`",
+            f"- **Affected Endpoint / Asset**: `{endpoint_str}`",
+            f"- **Reported Severity**: **{finding.severity.value}**",
+            f"- **Detection Component**: `{finding.tool}`",
+            f"",
+            f"## 3. Steps to Reproduce",
+            f"{reproduction_str}",
+            f"",
+            f"## 4. Impact Assessment",
+            f"{finding.why_it_matters}",
+            f"",
+            f"## 5. Suggested Remediation",
+            f"{remediation_str}",
+            f"",
+            f"## 6. References & Standards",
+            f"{finding.reference_url or 'https://owasp.org/www-project-top-ten/'}",
+            f"",
+            f"---",
+            f"*Auto-drafted by CyberSentinel Security Operations Agent.*"
+        ]
+
+        with open(report_file, "w", encoding="utf-8") as out:
+            out.write("\n".join(draft))
 
         return report_file

@@ -434,3 +434,49 @@ class Database:
                 WHERE id = ?;
             """, (now, schedule_id))
             await db.commit()
+
+    async def get_previous_scan_findings(self, domain: str) -> List[Finding]:
+        """Retrieve findings from the most recent completed scan for delta diffing."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("""
+                SELECT scan_id
+                FROM scans
+                WHERE target_domain = ? AND status = 'COMPLETED'
+                ORDER BY id DESC
+                LIMIT 1;
+            """, (domain.lower().strip(),))
+            row = await cursor.fetchone()
+            if not row:
+                return []
+
+            latest_scan_id = row["scan_id"]
+            cursor = await db.execute("""
+                SELECT tool, severity, title, description, why_it_matters, reference_url, raw_details
+                FROM findings
+                WHERE scan_id = ?
+                ORDER BY id ASC;
+            """, (latest_scan_id,))
+            f_rows = await cursor.fetchall()
+            return [
+                Finding(
+                    title=f["title"],
+                    severity=Severity(f["severity"]),
+                    tool=f["tool"],
+                    description=f["description"],
+                    why_it_matters=f["why_it_matters"],
+                    reference_url=f["reference_url"],
+                    raw_data=json.loads(f["raw_details"]) if f["raw_details"] else None
+                )
+                for f in f_rows
+            ]
+
+    async def log_consent(self, target_domain: str, user_id: int, action: str, details: str) -> None:
+        """Log timestamped active testing consent to audit_logs."""
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                INSERT INTO audit_logs (target_domain, user_id, action, allowed, reason, timestamp)
+                VALUES (?, ?, ?, 1, ?, ?);
+            """, (target_domain.lower().strip(), user_id, action, details, now))
+            await db.commit()
