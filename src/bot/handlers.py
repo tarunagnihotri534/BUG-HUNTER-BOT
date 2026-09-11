@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Tuple
 from telegram import Update
-from telegram.ext import ContextTypes, CommandHandler
+from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters
 
 from ..config import Settings
 from ..database.db import Database
@@ -14,6 +14,7 @@ from ..core.orchestrator import ScanOrchestrator
 from ..core.formatter import ReportFormatter
 from ..core.exporter import ExecutiveReportExporter
 from ..core.scorer import SecurityScorer
+from ..agent.gemini_service import GeminiService, split_telegram_message
 
 logger = logging.getLogger(__name__)
 
@@ -26,15 +27,17 @@ class BotHandlers:
         settings: Settings,
         db: Database,
         allowlist: AllowlistService,
-        orchestrator: ScanOrchestrator
+        orchestrator: ScanOrchestrator,
+        gemini_service: Optional[GeminiService] = None,
     ):
         self.settings = settings
         self.db = db
         self.allowlist = allowlist
         self.orchestrator = orchestrator
+        self.gemini_service = gemini_service
 
     def register_handlers(self, application) -> None:
-        """Register command handlers with the Telegram application."""
+        """Register command and message handlers with the Telegram application."""
         guard = restricted_access(self.settings, self.db)
 
         application.add_handler(CommandHandler(["start", "help"], guard(self.cmd_help)))
@@ -51,14 +54,26 @@ class BotHandlers:
         application.add_handler(CommandHandler("removesite", guard(self.cmd_removesite)))
         application.add_handler(CommandHandler("listsites", guard(self.cmd_listsites)))
         application.add_handler(CommandHandler("audit", guard(self.cmd_audit)))
+        application.add_handler(CommandHandler("reset", guard(self.cmd_reset_chat)))
+
+        # Natural language conversational chat via Gemini AI Assistant
+        application.add_handler(
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                guard(self.cmd_natural_chat)
+            )
+        )
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Display help and operational manual."""
         user_id = update.effective_user.id
         msg = (
-            "🛡️ **Website Security Health-Check Assistant**\n\n"
+            "🛡️ **Website Security Health-Check & AI Assistant**\n\n"
             "Automated defensive security health checks using TLS audit, HTTP security headers, "
             "DNS/SPF/DMARC posture, and optional external engines (Nuclei, ZAP, Nikto, Gitleaks, HIBP).\n\n"
+            "💬 **Conversational AI Assistant (Gemini Pro)**:\n"
+            "• Simply send any message to chat! Ask security questions, request remediation code, or ask to check approved domains.\n"
+            "• `/reset` — Clear your conversation memory with Gemini\n\n"
             "⚠️ **Hard Authorization Rule**: Scans are strictly restricted to pre-approved domains.\n\n"
             "📋 **Core Scan Commands**:\n"
             "• `/check <domain>` — Run comprehensive health check on an approved target\n"
@@ -76,7 +91,7 @@ class BotHandlers:
             "• `/removesite <domain>` — Revoke authorization for a domain\n"
             "• `/listsites` — Display all approved domains & their latest scores\n"
             "• `/audit` — Review authorization & security access logs\n\n"
-            f"👤 *Authenticated as Telegram User ID: `{user_id}`*"
+            "👨‍💻 *Creator: TARUN*"
         )
         await update.effective_message.reply_text(msg, parse_mode="Markdown")
 
@@ -484,3 +499,42 @@ class BotHandlers:
                 f"  User: `{log.user_id}` | Reason: _{log.reason}_\n"
             )
         await update.effective_message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def cmd_reset_chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Reset the active conversation history with Gemini AI assistant."""
+        user_id = update.effective_user.id
+        if self.gemini_service:
+            self.gemini_service.reset_chat(user_id)
+        await update.effective_message.reply_text("🔄 AI chat session history has been cleared.")
+
+    async def cmd_natural_chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Process conversational natural language messages with the Gemini AI assistant."""
+        if not update.effective_message or not update.effective_message.text:
+            return
+
+        user_id = update.effective_user.id
+        user_text = update.effective_message.text.strip()
+        if not user_text:
+            return
+
+        # Send typing action to Telegram chat
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action="typing"
+        )
+
+        if not self.gemini_service:
+            await update.effective_message.reply_text(
+                "🤖 AI Assistant service is not initialized.\n"
+                "Use `/help` to see available commands."
+            )
+            return
+
+        reply_text = await self.gemini_service.chat(user_id, user_text)
+        chunks = split_telegram_message(reply_text)
+        for chunk in chunks:
+            try:
+                await update.effective_message.reply_text(chunk, parse_mode="Markdown")
+            except Exception:
+                # If Telegram fails to parse Markdown, fallback to raw text
+                await update.effective_message.reply_text(chunk)

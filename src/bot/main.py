@@ -3,11 +3,13 @@ import logging
 import sys
 from pathlib import Path
 from telegram.ext import ApplicationBuilder
+from telegram.request import HTTPXRequest
 
 from ..config import get_settings
 from ..database.db import Database
 from ..security.allowlist import AllowlistService
 from ..core.orchestrator import ScanOrchestrator
+from ..agent.gemini_service import GeminiService
 from .handlers import BotHandlers
 
 logging.basicConfig(
@@ -41,10 +43,17 @@ async def async_init_and_run() -> None:
     # Initialize services
     allowlist_svc = AllowlistService(db)
     orchestrator = ScanOrchestrator(settings, db)
-    handlers = BotHandlers(settings, db, allowlist_svc, orchestrator)
+    gemini_svc = GeminiService(settings, allowlist_svc, orchestrator, db)
+    handlers = BotHandlers(settings, db, allowlist_svc, orchestrator, gemini_svc)
 
-    # Build Telegram Application
-    app = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    # Build Telegram Application with resilient timeouts
+    trequest = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0,
+    )
+    app = ApplicationBuilder().token(settings.telegram_bot_token).request(trequest).build()
     handlers.register_handlers(app)
 
     logger.info("Security Health-Check Telegram Bot started. Listening for commands...")

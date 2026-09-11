@@ -2,7 +2,7 @@
 
 ![Python Versions](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue.svg?style=for-the-badge&logo=python&logoColor=white)
 ![Telegram Bot API](https://img.shields.io/badge/telegram_bot_api-v21.0+-0088cc.svg?style=for-the-badge&logo=telegram&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-24%20passed-success.svg?style=for-the-badge&logo=pytest&logoColor=white)
+![Tests](https://img.shields.io/badge/tests-30%20passed-success.svg?style=for-the-badge&logo=pytest&logoColor=white)
 ![Architecture](https://img.shields.io/badge/architecture-asyncio%20%2F%20zero--trust-informational.svg?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge)
 
@@ -167,6 +167,8 @@ Immediate attention is required! 1 critical issue(s) detected during automated h
 | `/removesite` | `<domain>` | Authorized | Revokes approval for a domain (all future scans will be denied). |
 | `/listsites` | None | Authorized | Lists all approved domains and their latest recorded security grade. |
 | `/audit` | None | Authorized | Displays the last 10 security audit records (authorized & denied attempts). |
+| `/reset` | None | Authorized | Clears active conversational memory with the Gemini AI assistant. |
+| **Natural Language** | `<message>` | Authorized | Direct chat with Gemini Pro assistant to analyze findings, ask cybersecurity questions, or trigger audits. |
 
 ---
 
@@ -323,6 +325,8 @@ Configure your environment variables:
 | `NIKTO_BIN` | No | Auto-detect | Path to `nikto` binary (or leave empty if on system PATH). |
 | `GITLEAKS_BIN` | No | Auto-detect | Path to `gitleaks` binary (or leave empty if on system PATH). |
 | `HIBP_API_KEY` | No | `""` | Have I Been Pwned API Key (for breach searches). |
+| `GEMINI_API_KEY` | No | `""` | Google Gemini API Key (for conversational AI assistant and tool-calling). |
+| `GEMINI_MODEL` | No | `gemini-2.5-pro` | Gemini model name (`gemini-2.5-pro`, `gemini-1.5-pro`, etc.). |
 
 ### Running the Bot
 
