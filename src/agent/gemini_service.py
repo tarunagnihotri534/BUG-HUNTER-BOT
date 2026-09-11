@@ -165,7 +165,7 @@ class GeminiService:
                 "To enable conversational intelligence, add your Gemini API Key in your `.env` file:\n"
                 "```env\n"
                 "GEMINI_API_KEY=your_gemini_api_key\n"
-                "GEMINI_MODEL=gemini-2.5-pro\n"
+                "GEMINI_MODEL=gemini-3.5-flash\n"
                 "```\n"
                 "You can still use all regular slash commands like `/help`, `/check <domain>`, `/status`, and `/listsites`!"
             )

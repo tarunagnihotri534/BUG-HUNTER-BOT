@@ -36,7 +36,7 @@ class Settings(BaseSettings):
 
     # Gemini AI Assistant configuration
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-2.5-pro", alias="GEMINI_MODEL")
+    gemini_model: str = Field(default="gemini-3.5-flash", alias="GEMINI_MODEL")
 
     @field_validator("allowed_telegram_user_ids", mode="before")
     @classmethod
